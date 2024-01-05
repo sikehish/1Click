@@ -11,6 +11,8 @@ from flask_mail import Message, Mail
 from geopy.distance import geodesic
 from math import radians, sin, cos, sqrt, atan2
 
+from ML import recommend, add_event
+
 
 load_dotenv()
 
@@ -272,9 +274,12 @@ def create_event():
     }
 
     # Insert the event document into the events collection
-    events_col.insert_one(event)
-
+    inserted_event = events_col.insert_one(event)
+    id = inserted_event.inserted_id
+    inserted_event = events_col.find_one({"_id": ObjectId(id)})
+    add_event(inserted_event)
     return jsonify(message="Event created")
+
 
 
 # @app.route("/api/update", methods=["PATCH"])
@@ -318,43 +323,29 @@ def network():
     return parse_json(networks), 200
 
 
-def calculate_distances(coordinates, locations):
-    distances = []
-    for location in locations:
-        lat = location["latitude"]
-        lon = location["longitude"]
-        location_coords = (lat, lon)
+@app.route("/api/distance", methods=["POST"])
+def calculate_distances():
+    data = request.get_json()
+    evnt_location_dict = data["location"]
+    user_coord_dict = (session.get("user"))["coordinates"]
+    user_coord = (user_coord_dict["latitude"], user_coord_dict["longitude"])
+    evnt_location = (evnt_location_dict["latitudes"], evnt_location_dict["longitudes"])
+    distance = geodesic(user_coord, evnt_location).kilometers
 
-        distance = 0.0
-        print(coordinates.items())
-        for coord_key, coord_val in coordinates.items():
-            # if coord_key == "latitude" or coord_key == "longitude":
-            #     continue
-            coord_lat = coord_val["latitude"]
-            coord_lon = coord_val["longitude"]
-            coord = (coord_lat, coord_lon)
-            distance += geodesic(coord, location_coords).kilometers
-
-        distances.append(distance)
-
-    return distances
+    return jsonify(distance=int(distance))
 
 
 @app.route("/api/recommended")
 def recommended():
-    recommended_events = list(events_col.find())
-    # print(session.get("user"))
-    if not session.get("user"):
-        return parse_json(recommended_events), 200
-    user_coords = session.get("user").get("coordinates")
-    events_coords = []
+    recommended_events = list(recommend((session.get("user"))["_id"], users_col))
+    m = {"$match": {"_id": {"$in": recommended_events}}}
+    a = {"$addFields": {"__order": {"$indexOfArray": [recommended_events, "$_id"]}}}
+    s = {"$sort": {"__order": 1}}
+    recommended_events = events_col.aggregate([m, a, s])
+    final = []
     for event in recommended_events:
-        events_coords.append(event["coordinates"])
-
-    # print(user_coords, events_coords)
-    # distances = calculate_distances(user_coords, events_coords)
-    # print(distances)
-    return parse_json(recommended_events), 200
+        final.append(event)
+    return parse_json(final), 200
 
 
 @app.route("/api/search", methods=["GET"])
